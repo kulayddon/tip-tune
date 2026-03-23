@@ -10,40 +10,50 @@ use soroban_sdk::{
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 struct TestSetup {
-    env:      Env,
+    env: Env,
     contract: Address,
-    token:    Address,
-    admin:    Address,
-    tipper:   Address,
-    artist:   Address,
-    signer1:  Address,
-    signer2:  Address,
-    signer3:  Address,
+    token: Address,
+    admin: Address,
+    tipper: Address,
+    artist: Address,
+    signer1: Address,
+    signer2: Address,
+    signer3: Address,
 }
 
 fn setup() -> TestSetup {
     let env = Env::default();
     env.mock_all_auths();
 
-    let admin   = Address::generate(&env);
-    let tipper  = Address::generate(&env);
-    let artist  = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let tipper = Address::generate(&env);
+    let artist = Address::generate(&env);
     let signer1 = Address::generate(&env);
     let signer2 = Address::generate(&env);
     let signer3 = Address::generate(&env);
 
     let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
     let token = token_contract.address().clone();
-    StellarAssetClient::new(&env, &token).mint(&tipper, &10_000_0000000_i128);
+    StellarAssetClient::new(&env, &token).mint(&tipper, &100_000_000_000_i128);
 
     let contract = env.register_contract(None, MultisigContract);
-    let client   = MultisigContractClient::new(&env, &contract);
+    let client = MultisigContractClient::new(&env, &contract);
     client.initialize(&admin, &token);
     client.add_signer(&signer1);
     client.add_signer(&signer2);
     client.add_signer(&signer3);
 
-    TestSetup { env, contract, token, admin, tipper, artist, signer1, signer2, signer3 }
+    TestSetup {
+        env,
+        contract,
+        token,
+        admin,
+        tipper,
+        artist,
+        signer1,
+        signer2,
+        signer3,
+    }
 }
 
 fn client<'a>(env: &'a Env, contract: &Address) -> MultisigContractClient<'a> {
@@ -51,11 +61,18 @@ fn client<'a>(env: &'a Env, contract: &Address) -> MultisigContractClient<'a> {
 }
 
 fn advance(env: &Env, by: u32) {
+    // These tests model "ledgers passing" by moving time forward.
+    // We avoid large sequence jumps because Soroban's host test environment
+    // can archive contract instance state after sufficiently large
+    // sequence increases, causing panics.
+    let current = env.ledger().get();
     let seq = env.ledger().sequence();
+
     env.ledger().set(LedgerInfo {
-        sequence_number: seq + by,
-        timestamp: env.ledger().timestamp() + (by as u64 * 5),
-        ..env.ledger().get()
+        // Keep sequence movement small; expiration checks are timestamp-based.
+        sequence_number: seq + 1,
+        timestamp: current.timestamp + (by as u64 * 5),
+        ..current
     });
 }
 
@@ -80,14 +97,16 @@ fn test_initialize_twice_fails() {
 
 #[test]
 fn test_add_signer() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
-    let s  = Address::generate(&t.env);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
+    let s = Address::generate(&t.env);
     c.add_signer(&s);
     let signers = c.get_signers();
     let mut found = false;
     for i in 0..signers.len() {
-        if signers.get(i).unwrap() == s { found = true; }
+        if signers.get(i).unwrap() == s {
+            found = true;
+        }
     }
     assert!(found);
 }
@@ -116,20 +135,20 @@ fn test_remove_signer() {
 
 #[test]
 fn test_create_tip_success() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
-    let id = c.create_multisig_tip(&t.tipper, &t.artist, &1_000_0000000_i128, &2);
-    let p  = c.get_tip(&id).unwrap();
-    assert_eq!(p.amount,        1_000_0000000_i128);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
+    let id = c.create_multisig_tip(&t.tipper, &t.artist, &10_000_000_000_i128, &2);
+    let p = c.get_tip(&id).unwrap();
+    assert_eq!(p.amount, 10_000_000_000_i128);
     assert_eq!(p.required_sigs, 2);
-    assert_eq!(p.status,        TipStatus::Pending);
+    assert_eq!(p.status, TipStatus::Pending);
     assert_eq!(p.approvals.len(), 0);
 }
 
 #[test]
 fn test_create_tip_locks_tokens() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let tc = soroban_sdk::token::Client::new(&t.env, &t.token);
     let before = tc.balance(&t.tipper);
     c.create_multisig_tip(&t.tipper, &t.artist, &500_0000000_i128, &1);
@@ -138,8 +157,8 @@ fn test_create_tip_locks_tokens() {
 
 #[test]
 fn test_create_tip_unique_ids() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id1 = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &1);
     let id2 = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &1);
     assert_ne!(id1, id2);
@@ -158,7 +177,12 @@ fn test_create_tip_zero_amount_fails() {
 fn test_create_tip_zero_sigs_fails() {
     let t = setup();
     assert_eq!(
-        client(&t.env, &t.contract).try_create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &0),
+        client(&t.env, &t.contract).try_create_multisig_tip(
+            &t.tipper,
+            &t.artist,
+            &100_0000000_i128,
+            &0
+        ),
         Err(Ok(Error::ZeroSigners))
     );
 }
@@ -168,7 +192,10 @@ fn test_create_tip_too_many_sigs_fails() {
     let t = setup();
     assert_eq!(
         client(&t.env, &t.contract).try_create_multisig_tip(
-            &t.tipper, &t.artist, &100_0000000_i128, &(MAX_REQUIRED_SIGS + 1)
+            &t.tipper,
+            &t.artist,
+            &100_0000000_i128,
+            &(MAX_REQUIRED_SIGS + 1)
         ),
         Err(Ok(Error::TooManySigners))
     );
@@ -178,27 +205,27 @@ fn test_create_tip_too_many_sigs_fails() {
 
 #[test]
 fn test_approve_returns_false_below_threshold() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &2);
     assert!(!c.approve_tip(&id, &t.signer1));
 }
 
 #[test]
 fn test_approve_returns_true_at_threshold() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &1);
     assert!(c.approve_tip(&id, &t.signer1));
 }
 
 #[test]
 fn test_approve_transfers_to_artist() {
-    let t   = setup();
-    let c   = client(&t.env, &t.contract);
-    let tc  = soroban_sdk::token::Client::new(&t.env, &t.token);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
+    let tc = soroban_sdk::token::Client::new(&t.env, &t.token);
     let amt = 500_0000000_i128;
-    let id  = c.create_multisig_tip(&t.tipper, &t.artist, &amt, &1);
+    let id = c.create_multisig_tip(&t.tipper, &t.artist, &amt, &1);
     let before = tc.balance(&t.artist);
     c.approve_tip(&id, &t.signer1);
     assert_eq!(tc.balance(&t.artist) - before, amt);
@@ -206,8 +233,8 @@ fn test_approve_transfers_to_artist() {
 
 #[test]
 fn test_approve_status_becomes_executed() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &1);
     c.approve_tip(&id, &t.signer1);
     assert_eq!(c.get_tip(&id).unwrap().status, TipStatus::Executed);
@@ -215,8 +242,8 @@ fn test_approve_status_becomes_executed() {
 
 #[test]
 fn test_approve_collects_multiple_sigs() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &3);
     c.approve_tip(&id, &t.signer1);
     assert_eq!(c.get_pending_approvals(&id).len(), 1);
@@ -227,35 +254,44 @@ fn test_approve_collects_multiple_sigs() {
 
 #[test]
 fn test_duplicate_approval_fails() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &3);
     c.approve_tip(&id, &t.signer1);
-    assert_eq!(c.try_approve_tip(&id, &t.signer1), Err(Ok(Error::AlreadyApproved)));
+    assert_eq!(
+        c.try_approve_tip(&id, &t.signer1),
+        Err(Ok(Error::AlreadyApproved))
+    );
 }
 
 #[test]
 fn test_non_whitelisted_approver_fails() {
-    let t     = setup();
-    let c     = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let rando = Address::generate(&t.env);
-    let id    = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &1);
-    assert_eq!(c.try_approve_tip(&id, &rando), Err(Ok(Error::NotWhitelisted)));
+    let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &1);
+    assert_eq!(
+        c.try_approve_tip(&id, &rando),
+        Err(Ok(Error::NotWhitelisted))
+    );
 }
 
 #[test]
 fn test_approve_expired_tip_fails() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &2);
     advance(&t.env, TIMEOUT_LEDGERS + 1);
-    assert_eq!(c.try_approve_tip(&id, &t.signer1), Err(Ok(Error::TipExpired)));
+    assert_eq!(
+        c.try_approve_tip(&id, &t.signer1),
+        Err(Ok(Error::TipExpired))
+    );
 }
 
 #[test]
 fn test_approvals_needed_decrements() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &3);
     assert_eq!(c.approvals_needed(&id), 3);
     c.approve_tip(&id, &t.signer1);
@@ -268,8 +304,8 @@ fn test_approvals_needed_decrements() {
 
 #[test]
 fn test_tipper_can_cancel_anytime() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &3);
     c.cancel_tip(&id, &t.tipper);
     assert_eq!(c.get_tip(&id).unwrap().status, TipStatus::Cancelled);
@@ -277,28 +313,31 @@ fn test_tipper_can_cancel_anytime() {
 
 #[test]
 fn test_cancel_refunds_tipper() {
-    let t   = setup();
-    let c   = client(&t.env, &t.contract);
-    let tc  = soroban_sdk::token::Client::new(&t.env, &t.token);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
+    let tc = soroban_sdk::token::Client::new(&t.env, &t.token);
     let amt = 300_0000000_i128;
     let before = tc.balance(&t.tipper);
-    let id  = c.create_multisig_tip(&t.tipper, &t.artist, &amt, &3);
+    let id = c.create_multisig_tip(&t.tipper, &t.artist, &amt, &3);
     c.cancel_tip(&id, &t.tipper);
     assert_eq!(tc.balance(&t.tipper), before);
 }
 
 #[test]
 fn test_non_tipper_cannot_cancel_before_timeout() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &3);
-    assert_eq!(c.try_cancel_tip(&id, &t.signer1), Err(Ok(Error::TipNotExpired)));
+    assert_eq!(
+        c.try_cancel_tip(&id, &t.signer1),
+        Err(Ok(Error::TipNotExpired))
+    );
 }
 
 #[test]
 fn test_anyone_can_cancel_after_timeout() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &3);
     advance(&t.env, TIMEOUT_LEDGERS + 1);
     c.cancel_tip(&id, &t.signer1);
@@ -307,27 +346,30 @@ fn test_anyone_can_cancel_after_timeout() {
 
 #[test]
 fn test_cancel_executed_tip_fails() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &1);
     c.approve_tip(&id, &t.signer1);
-    assert_eq!(c.try_cancel_tip(&id, &t.tipper), Err(Ok(Error::TipNotPending)));
+    assert_eq!(
+        c.try_cancel_tip(&id, &t.tipper),
+        Err(Ok(Error::TipNotPending))
+    );
 }
 
 // ─── Timeout Tests ────────────────────────────────────────────────────────────
 
 #[test]
 fn test_is_expired_false_before_timeout() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &2);
     assert!(!c.is_expired(&id));
 }
 
 #[test]
 fn test_is_expired_true_after_timeout() {
-    let t  = setup();
-    let c  = client(&t.env, &t.contract);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &100_0000000_i128, &2);
     advance(&t.env, TIMEOUT_LEDGERS + 1);
     assert!(c.is_expired(&id));
@@ -337,10 +379,10 @@ fn test_is_expired_true_after_timeout() {
 
 #[test]
 fn test_full_2_of_3_lifecycle() {
-    let t   = setup();
-    let c   = client(&t.env, &t.contract);
-    let tc  = soroban_sdk::token::Client::new(&t.env, &t.token);
-    let amt = 1_000_0000000_i128;
+    let t = setup();
+    let c = client(&t.env, &t.contract);
+    let tc = soroban_sdk::token::Client::new(&t.env, &t.token);
+    let amt = 10_000_000_000_i128;
 
     // Create proposal requiring 2 of 3 sigs.
     let id = c.create_multisig_tip(&t.tipper, &t.artist, &amt, &2);
@@ -358,9 +400,9 @@ fn test_full_2_of_3_lifecycle() {
 
 #[test]
 fn test_full_timeout_and_refund_lifecycle() {
-    let t   = setup();
-    let c   = client(&t.env, &t.contract);
-    let tc  = soroban_sdk::token::Client::new(&t.env, &t.token);
+    let t = setup();
+    let c = client(&t.env, &t.contract);
+    let tc = soroban_sdk::token::Client::new(&t.env, &t.token);
     let amt = 200_0000000_i128;
 
     let before = tc.balance(&t.tipper);

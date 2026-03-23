@@ -3,9 +3,8 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror,
-    Address, Env, String, Vec,
-    symbol_short, token,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env, String,
+    Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -18,7 +17,7 @@ const MAX_REQUIRED_SIGS: u32 = 10;
 
 /// Minimum amount (in base units) that requires multi-sig (not yet enforced).
 #[allow(dead_code)]
-const MULTISIG_THRESHOLD: i128 = 1_000_0000000; // 1000 tokens
+const MULTISIG_THRESHOLD: i128 = 10_000_000_000; // 1000 tokens
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 
@@ -67,8 +66,8 @@ pub struct TipProposal {
     pub approvals: Vec<Address>,
     /// Current status.
     pub status: TipStatus,
-    /// Ledger at which this tip expires.
-    pub expires_at: u32,
+    /// Ledger timestamp at which this tip expires.
+    pub expires_at: u64,
     /// Ledger this proposal was created.
     pub created_at: u32,
 }
@@ -118,15 +117,10 @@ pub struct MultisigContract;
 
 #[contractimpl]
 impl MultisigContract {
-
     // ── Initialisation ───────────────────────────────────────────────────────
 
     /// Initialise the contract with an admin and token address.
-    pub fn initialize(
-        env: Env,
-        admin: Address,
-        token: Address,
-    ) -> Result<(), Error> {
+    pub fn initialize(env: Env, admin: Address, token: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialised);
         }
@@ -146,7 +140,8 @@ impl MultisigContract {
     pub fn add_signer(env: Env, signer: Address) -> Result<(), Error> {
         Self::require_admin(&env)?;
         let mut signers: Vec<Address> = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::Signers)
             .unwrap_or_else(|| Vec::new(&env));
 
@@ -158,7 +153,8 @@ impl MultisigContract {
         }
         signers.push_back(signer.clone());
         env.storage().instance().set(&DataKey::Signers, &signers);
-        env.events().publish((symbol_short!("addSigner"), signer), ());
+        env.events()
+            .publish((symbol_short!("addSigner"), signer), ());
         Ok(())
     }
 
@@ -166,7 +162,8 @@ impl MultisigContract {
     pub fn remove_signer(env: Env, signer: Address) -> Result<(), Error> {
         Self::require_admin(&env)?;
         let signers: Vec<Address> = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::Signers)
             .unwrap_or_else(|| Vec::new(&env));
 
@@ -177,14 +174,18 @@ impl MultisigContract {
                 new_signers.push_back(s);
             }
         }
-        env.storage().instance().set(&DataKey::Signers, &new_signers);
-        env.events().publish((symbol_short!("rmSigner"), signer), ());
+        env.storage()
+            .instance()
+            .set(&DataKey::Signers, &new_signers);
+        env.events()
+            .publish((symbol_short!("rmSigner"), signer), ());
         Ok(())
     }
 
     /// Get all whitelisted signers.
     pub fn get_signers(env: Env) -> Vec<Address> {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&DataKey::Signers)
             .unwrap_or_else(|| Vec::new(&env))
     }
@@ -221,14 +222,18 @@ impl MultisigContract {
         token_client.transfer(&tipper, &env.current_contract_address(), &amount);
 
         // Generate unique tip ID from nonce + ledger.
-        let nonce: u64 = env.storage().instance()
-            .get(&DataKey::Nonce)
-            .unwrap_or(0);
+        let nonce: u64 = env.storage().instance().get(&DataKey::Nonce).unwrap_or(0);
         let tip_id = Self::generate_tip_id(&env, nonce);
         env.storage().instance().set(&DataKey::Nonce, &(nonce + 1));
 
-        let expires_at = env.ledger().sequence()
-            .checked_add(TIMEOUT_LEDGERS)
+        const SECONDS_PER_LEDGER: u64 = 5;
+        let timeout_seconds = (TIMEOUT_LEDGERS as u64)
+            .checked_mul(SECONDS_PER_LEDGER)
+            .ok_or(Error::Overflow)?;
+        let expires_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(timeout_seconds)
             .ok_or(Error::Overflow)?;
 
         let proposal = TipProposal {
@@ -243,7 +248,9 @@ impl MultisigContract {
             created_at: env.ledger().sequence(),
         };
 
-        env.storage().persistent().set(&DataKey::Tip(tip_id.clone()), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Tip(tip_id.clone()), &proposal);
 
         env.events().publish(
             (symbol_short!("created"), tipper.clone()),
@@ -259,11 +266,7 @@ impl MultisigContract {
     ///
     /// Returns `true` if this approval triggered execution (threshold met).
     /// Returns `false` if more signatures are still needed.
-    pub fn approve_tip(
-        env: Env,
-        tip_id: String,
-        approver: Address,
-    ) -> Result<bool, Error> {
+    pub fn approve_tip(env: Env, tip_id: String, approver: Address) -> Result<bool, Error> {
         approver.require_auth();
         Self::assert_initialised(&env)?;
 
@@ -271,7 +274,8 @@ impl MultisigContract {
         Self::assert_whitelisted(&env, &approver)?;
 
         let mut proposal: TipProposal = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Tip(tip_id.clone()))
             .ok_or(Error::TipNotFound)?;
 
@@ -280,7 +284,7 @@ impl MultisigContract {
             return Err(Error::TipNotPending);
         }
 
-        if env.ledger().sequence() > proposal.expires_at {
+        if env.ledger().timestamp() > proposal.expires_at {
             return Err(Error::TipExpired);
         }
 
@@ -311,7 +315,9 @@ impl MultisigContract {
             );
 
             proposal.status = TipStatus::Executed;
-            env.storage().persistent().set(&DataKey::Tip(tip_id.clone()), &proposal);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Tip(tip_id.clone()), &proposal);
 
             env.events().publish(
                 (symbol_short!("executed"), proposal.artist.clone()),
@@ -322,7 +328,9 @@ impl MultisigContract {
         }
 
         // Save updated proposal with new approval.
-        env.storage().persistent().set(&DataKey::Tip(tip_id), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Tip(tip_id), &proposal);
         Ok(false)
     }
 
@@ -337,7 +345,8 @@ impl MultisigContract {
         caller.require_auth();
 
         let mut proposal: TipProposal = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Tip(tip_id.clone()))
             .ok_or(Error::TipNotFound)?;
 
@@ -346,7 +355,7 @@ impl MultisigContract {
         }
 
         let is_tipper = caller == proposal.tipper;
-        let is_expired = env.ledger().sequence() > proposal.expires_at;
+        let is_expired = env.ledger().timestamp() > proposal.expires_at;
 
         // Only tipper can cancel before timeout; anyone can cancel after.
         if !is_tipper && !is_expired {
@@ -363,7 +372,9 @@ impl MultisigContract {
         );
 
         proposal.status = TipStatus::Cancelled;
-        env.storage().persistent().set(&DataKey::Tip(tip_id.clone()), &proposal);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Tip(tip_id.clone()), &proposal);
 
         env.events().publish(
             (symbol_short!("cancelled"), proposal.tipper.clone()),
@@ -377,7 +388,11 @@ impl MultisigContract {
 
     /// Get all pending approvals (addresses that have signed) for a tip.
     pub fn get_pending_approvals(env: Env, tip_id: String) -> Vec<Address> {
-        match env.storage().persistent().get::<DataKey, TipProposal>(&DataKey::Tip(tip_id)) {
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, TipProposal>(&DataKey::Tip(tip_id))
+        {
             None => Vec::new(&env),
             Some(p) => p.approvals,
         }
@@ -390,7 +405,11 @@ impl MultisigContract {
 
     /// Get number of approvals still needed for a tip.
     pub fn approvals_needed(env: Env, tip_id: String) -> u32 {
-        match env.storage().persistent().get::<DataKey, TipProposal>(&DataKey::Tip(tip_id)) {
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, TipProposal>(&DataKey::Tip(tip_id))
+        {
             None => 0,
             Some(p) => {
                 if p.approvals.len() >= p.required_sigs {
@@ -404,9 +423,13 @@ impl MultisigContract {
 
     /// Check if a tip has expired.
     pub fn is_expired(env: Env, tip_id: String) -> bool {
-        match env.storage().persistent().get::<DataKey, TipProposal>(&DataKey::Tip(tip_id)) {
+        match env
+            .storage()
+            .persistent()
+            .get::<DataKey, TipProposal>(&DataKey::Tip(tip_id))
+        {
             None => false,
-            Some(p) => env.ledger().sequence() > p.expires_at,
+            Some(p) => env.ledger().timestamp() > p.expires_at,
         }
     }
 
@@ -435,7 +458,8 @@ impl MultisigContract {
 
     fn require_admin(env: &Env) -> Result<Address, Error> {
         let admin: Address = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialised)?;
         admin.require_auth();
@@ -448,7 +472,8 @@ impl MultisigContract {
 
     fn assert_whitelisted(env: &Env, signer: &Address) -> Result<(), Error> {
         let signers: Vec<Address> = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::Signers)
             .unwrap_or_else(|| Vec::new(env));
 
@@ -467,7 +492,9 @@ impl MultisigContract {
         // In production consider using env.crypto().sha256() for a hash-based ID.
         let ledger = env.ledger().sequence() as u64;
         // Encode as base-10 digits in a fixed-length Soroban String.
-        let id_num: u64 = ledger.wrapping_mul(1_000_000).wrapping_add(nonce % 1_000_000);
+        let id_num: u64 = ledger
+            .wrapping_mul(1_000_000)
+            .wrapping_add(nonce % 1_000_000);
         Self::u64_to_string(env, id_num)
     }
 
