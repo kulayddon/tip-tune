@@ -6,7 +6,14 @@ import {
   ThrottlerRequest,
 } from "@nestjs/throttler";
 import { Request, Response } from "express";
-import { THROTTLE_AUTH_AWARE } from "../decorators/throttle-override.decorator";
+import {
+  THROTTLE_AUTH_AWARE,
+  ROUTE_TYPE_METADATA,
+} from "../decorators/throttle-override.decorator";
+import {
+  RouteType,
+  getThrottlePresetByRouteType,
+} from "../decorators/throttle-override.decorator";
 
 @Injectable()
 export class CustomThrottlerGuard extends ThrottlerGuard {
@@ -44,33 +51,53 @@ export class CustomThrottlerGuard extends ThrottlerGuard {
       return true;
     }
 
+    // Check for route type metadata and apply dynamic limits
+    const routeType = this.reflector.getAllAndOverride<RouteType>(
+      ROUTE_TYPE_METADATA,
+      [context.getHandler(), context.getClass()],
+    );
+
     // Check if endpoint is auth-aware and adjust limits
     const isAuthAware = this.reflector.getAllAndOverride<boolean>(
       THROTTLE_AUTH_AWARE,
       [context.getHandler(), context.getClass()],
     );
 
+    let adjustedLimit = limit;
+    let adjustedTtl = ttl;
+
+    // Apply route type-based limits
+    if (routeType) {
+      const preset = getThrottlePresetByRouteType(routeType);
+      adjustedLimit = preset.limit;
+      adjustedTtl = preset.ttl;
+    }
+
+    // Apply auth-aware adjustments
     if (isAuthAware && this.isAuthenticated(request)) {
-      // Increase limit for authenticated users
-      const { context, throttler } = requestProps;
-      const limit = requestProps.limit;
-      const ttl = requestProps.ttl;
+      // Increase limit for authenticated users (20% boost)
+      adjustedLimit = Math.floor(adjustedLimit * 1.2);
     }
 
     try {
-      // Call parent implementation to check rate limit
-      const result = await super.handleRequest(requestProps);
+      // Call parent implementation with adjusted limits
+      const adjustedRequestProps = {
+        ...requestProps,
+        limit: adjustedLimit,
+        ttl: adjustedTtl,
+      };
+      const result = await super.handleRequest(adjustedRequestProps);
 
       // Add rate limit headers on successful requests
-      this.addRateLimitHeaders(response, limit, ttl);
+      this.addRateLimitHeaders(response, adjustedLimit, adjustedTtl);
 
       return result;
     } catch (error) {
       // Add rate limit headers on rate limit exceeded
-      this.addRateLimitHeaders(response, limit, ttl, true);
+      this.addRateLimitHeaders(response, adjustedLimit, adjustedTtl, true);
 
       // Add Retry-After header (in seconds)
-      const retryAfter = Math.ceil(ttl / 1000);
+      const retryAfter = Math.ceil(adjustedTtl / 1000);
       response.setHeader("Retry-After", retryAfter.toString());
 
       // Throw custom error with more details
