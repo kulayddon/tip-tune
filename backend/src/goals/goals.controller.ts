@@ -10,13 +10,17 @@ import {
   Request,
 } from '@nestjs/common';
 import { GoalsService } from './goals.service';
+import { GoalProgressService } from './goal-progress.service';
 import { CreateGoalDto } from './dto/create-goal.dto';
 import { UpdateGoalDto } from './dto/update-goal.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 @Controller('goals')
 export class GoalsController {
-  constructor(private readonly goalsService: GoalsService) {}
+  constructor(
+    private readonly goalsService: GoalsService,
+    private readonly goalProgressService: GoalProgressService,
+  ) {}
 
   @Post()
   @UseGuards(JwtAuthGuard)
@@ -32,6 +36,28 @@ export class GoalsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.goalsService.findOne(id);
+  }
+
+  @Get(':id/progress')
+  getProgressStats(@Param('id') id: string) {
+    return this.goalProgressService.getGoalProgressStats(id);
+  }
+
+  @Get(':id/progress-history')
+  getProgressHistory(@Param('id') id: string) {
+    return this.goalProgressService.getGoalProgressHistory(id);
+  }
+
+  @Get(':id/supporters')
+  getSupporterActivity(@Param('id') id: string) {
+    return this.goalProgressService.getSupporterActivitySummaries(id);
+  }
+
+  @Post(':id/snapshot')
+  @UseGuards(JwtAuthGuard)
+  createManualSnapshot(@Param('id') id: string, @Request() req) {
+    // TODO: Add authorization check to ensure user owns the goal
+    return this.goalProgressService.createManualSnapshot(id);
   }
 
   @Patch(':id')
