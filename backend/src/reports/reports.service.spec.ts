@@ -81,7 +81,7 @@ describe('ReportsService', () => {
 
       expect(reportRepository.find).toHaveBeenCalledWith({
         where: { status: ReportStatus.PENDING },
-        relations: ['reportedBy', 'reviewedBy'],
+        relations: ['reportedBy', 'reviewedBy', 'assignedTo'],
         order: { createdAt: 'DESC' },
       });
       expect(result).toEqual(expectedReports);
